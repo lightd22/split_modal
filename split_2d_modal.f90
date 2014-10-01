@@ -24,16 +24,22 @@ PROGRAM EXECUTE
     doposlimit = .FALSE.
     doTimeTest = .FALSE.
 
-    polyOrder = 9
-    startRes = 48
-    testEnd = 1
+    polyOrder = 4
+    startRes = 12
+    testEnd = 2
 
     ALLOCATE(testsVec(1:testEnd),STAT=ierr)
-    testsVec = (/ 5 /)
+    testsVec = (/ 6,7 /)
 
     SELECT CASE(polyOrder)
+        CASE(2)
+            muMAX = 0.209D0
+        CASE(3)
+            muMAX = 0.130D0
         CASE(4)
             muMAX = 0.089D0
+!            muMAX = 0.11D0
+!            muMAX = 0.05D0
         CASE(5)
             muMAX = 0.066D0
         CASE(6)
@@ -45,6 +51,14 @@ PROGRAM EXECUTE
         CASE(9)
             muMAX = 0.026D0
     END SELECT
+    muMAX = muMAX*0.9
+!    muMAX = muMAX*(1D0+.3D0)
+
+    write(*,*) '======================================================'
+    write(*,*) '             BEGINNING RUN OF MODAL TESTS             '
+    write(*,'(A27,F7.4)') 'muMAX=',muMAX
+    write(*,*) '======================================================'
+
 
     DO nTest=1,testEnd
         whichTest = testsVec(nTest)
@@ -56,15 +70,21 @@ PROGRAM EXECUTE
             CASE(1)
                 	write(*,*) 'TEST 1: Uniform advection (u=v=1)'                
                 	transient = .FALSE.
+            CASE(2)
+                	write(*,*) 'TEST 2: Solid body rotation of cylinder'
+                transient = .FALSE.
             CASE(5)
                 write(*,*) 'TEST 5: LeVeque Cosbell Deformation Test'
                 transient = .TRUE.
             CASE(6)
                 	write(*,*) 'TEST 6: LeVeque Smoother Cosbell Deformation Test'
                 	transient = .TRUE.
+            CASE(7)
+                	write(*,*) 'TEST 7: Slotted Cylinder Deformation Test'
+                	transient = .TRUE.
         END SELECT
         	write(*,*) '======'
-        	CALL test2d_modal(whichTest,startRes,startRes,2,2,2,muMAX) !1D0/(2D0*4D0-1D0) !0.3D0/sqrt(2d0)
+        	CALL test2d_modal(whichTest,startRes,startRes,2,3,2,muMAX) !1D0/(2D0*4D0-1D0) !0.3D0/sqrt(2d0)
     ENDDO
     DEALLOCATE(testsVec,STAT=ierr)
 
@@ -155,6 +175,7 @@ CONTAINS
         			ENDDO !j
         		ENDDO !i
 
+        
             DO p=1,nlevel
                 CALL cpu_time(t0)
 
@@ -222,7 +243,7 @@ CONTAINS
                 ! Compute ICs for q,u, and v
                 ! =====================================================================================================
                 CALL init2d(ntest,nx,ny,xPlot,yPlot,xEdge,yEdge,nex,ney,DGx,DGy,elemCenterX,elemCenterY,dxel,dyel,&
-                            q0,u0,v0,uEdge0,vEdge0,tfinal,cdf_out)     
+                            q0,u0,v0,uEdge0,vEdge0,tfinal,cdf_out,quadNodes,quadWeights,nOrder)     
 
                 q = q0
                 cdf_out = outdir//cdf_out
@@ -248,7 +269,7 @@ CONTAINS
 
                 IF(doTimeTest) THEN
                     nout = 1 
-                    nstep = 600*nscale**(p-1)
+                    nstep = 800*nscale**(p-1)
                 ENDIF
 
                 dt = tfinal/DBLE(nstep)
@@ -462,7 +483,7 @@ CALL CPU_TIME(t2)
     END SUBROUTINE strangSplitUpdate
 
     SUBROUTINE init2d(ntest,nx,ny,xPlot,yPlot,xEdge,yEdge,nex,ney,DGx,DGy,elemCenterX,elemCenterY,dxel,dyel,&
-                      q0,u0,v0,uEdge0,vEdge0,tfinal,cdf_out)
+                      q0,u0,v0,uEdge0,vEdge0,tfinal,cdf_out,quadNodes,quadWeights,nOrder)
         IMPLICIT NONE
         ! Inputs
         INTEGER, INTENT(IN) :: ntest,nx,ny,nex,ney
@@ -472,6 +493,9 @@ CALL CPU_TIME(t2)
         REAL(KIND=8), DIMENSION(1:nex), INTENT(IN) :: elemCenterX
         REAL(KIND=8), DIMENSION(1:ney), INTENT(IN) :: elemCenterY
         REAL(KIND=8), DIMENSION(1:2), INTENT(IN) :: xEdge,yEdge
+
+        INTEGER, INTENT(IN) :: nOrder
+        REAL(KIND=8), DIMENSION(0:nOrder), INTENT(IN) :: quadNodes,quadWeights
         ! Outputs
         REAL(KIND=8), INTENT(OUT) :: tfinal
         REAL(KIND=8), DIMENSION(1:nx,1:ny), INTENT(OUT) :: q0,u0,v0
@@ -479,7 +503,7 @@ CALL CPU_TIME(t2)
         REAL(KIND=8), DIMENSION(1:nx,1:ney), INTENT(OUT) :: vEdge0
         CHARACTER(LEN=40), INTENT(OUT) :: cdf_out
         ! Local Variables
-        INTEGER :: i,j
+        INTEGER :: i,j,l
         REAL(KIND=8) :: PI,waveSpd,dxPlot,dyPlot
         REAL(KIND=8), DIMENSION(0:nx) :: xPlotFace
         REAL(KIND=8), DIMENSION(0:ny) :: yPlotFace
@@ -488,6 +512,9 @@ CALL CPU_TIME(t2)
         	REAL(KIND=8), DIMENSION(1:nex,0:ny) :: psi1Edge
         	REAL(KIND=8), DIMENSION(0:nx,1:ney) :: psi2Edge
         REAL(KIND=8), DIMENSION(1:nx,1:ny) :: r
+
+        REAL(KIND=8), DIMENSION(0:nOrder,0:nOrder) :: physQuadVals,tmpArray,rTmp
+        REAL(KIND=8), DIMENSION(0:nOrder) :: coeffs
 
         PI = DACOS(-1D0)
         waveSpd = 1D0
@@ -518,11 +545,23 @@ CALL CPU_TIME(t2)
                 DO j=1,ny
                     q0(:,j) = sin(2.d0*PI*xPlot(:))*sin(2.d0*PI*yPlot(j))
                 ENDDO !j
+            CASE(2) ! Solid body rotation of cylinder
+                cdf_out = 'spltMod2d_rot_cylinder.nc'
+                waveSpd = 2D0*PI
+                tfinal = 1D0
+                DO j=1,ny
+                    r(:,j) = SQRT((xPlot-0.3D0)**2 + (yPlot(j)-0.3D0)**2)
+                ENDDO !j
+                q0 = 0D0
+                WHERE(r .lt. 0.125D0)
+                    q0 = 1D0
+                END WHERE
 
             CASE(5) ! Cosbell deformation from LeVeque
                 cdf_out = 'spltMod2d_def_cosinebell.nc'
                 waveSpd = 1D0
                 tfinal = 5D0
+
                 DO j=1,ny
                     r(:,j) = 4D0*SQRT( (xPlot-0.25D0)**2 + (yPlot(j)-0.25D0)**2 )
                 ENDDO !j
@@ -543,6 +582,26 @@ CALL CPU_TIME(t2)
                 WHERE(r .lt. 1D0)
                     q0 = (0.5D0*(1D0+DCOS(PI*r)))**3
                 END WHERE
+
+            CASE(7) ! Slotted cylinder in deformation flow
+                cdf_out = 'spltMod2d_def_cyl.nc'
+                waveSpd = 1D0
+                tfinal = 5D0
+                DO j=1,ny
+                    r(:,j) = SQRT((xPlot-0.3D0)**2 + (yPlot(j)-0.3D0)**2)
+                ENDDO !j
+                q0 = 0D0
+                WHERE(r .lt. .15D0)
+                    q0 = 1D0
+                END WHERE
+
+                DO j=1,ny
+                    DO i=1,nx
+                        IF(xPlot(i) .gt.(0.3D0+0.1D0) .AND. ABS(yPlot(j)-0.3D0) .lt. 0.025D0) THEN
+                            q0(i,j) = 0D0
+                        ENDIF
+                    ENDDO !i
+                ENDDO !j
         END SELECT
 
         SELECT CASE(ntest)
@@ -568,7 +627,29 @@ CALL CPU_TIME(t2)
             			ENDDO !j
             		ENDDO !i
 
-            CASE(0,5:6) ! LeVeque deformation flow
+            CASE(2) ! Solid body rotation
+            		! Evaluate stream function for horizontal velocities
+            		DO j=0,ny
+			        DO i=1,nx
+			        	psi1(i,j) = 0.5D0*waveSpd*((DGx(i)-0.5D0)**2+(yPlotFace(j)-0.5D0)**2)
+			        ENDDO !i
+			        DO i=1,nex
+				    psi1Edge(i,j) = 0.5D0*waveSpd*((elemCenterX(i)+dxel/2D0-0.5D0)**2+(yPlotFace(j)-0.5D0)**2)
+            			ENDDO !i
+		        ENDDO !j
+
+            		! Evaluate stream function for vertical velocities
+            		DO i=0,nx
+            			DO j=1,ny
+        				    psi2(i,j) = 0.5D0*waveSpd*((xPlotFace(i)-0.5D0)**2+(DGy(j)-0.5D0)**2)!-xPlotFace(i) + DGy(j)
+            			ENDDO !j
+            			DO j=1,ney
+        				    psi2Edge(i,j) =  0.5D0*waveSpd*((xPlotFace(i)-0.5D0)**2+(elemCenterY(j)+dyel/2D0-0.5D0)**2)
+            			ENDDO !j
+            		ENDDO !i
+                
+
+            CASE(0,5:7) ! LeVeque deformation flow
 
             		! Evaluate stream function for horizontal velocities (1/pi)*sin(pi*xf(i))**2 * sin(pi*yf(j))**2
             		DO j=0,ny

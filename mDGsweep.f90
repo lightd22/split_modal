@@ -22,10 +22,8 @@ SUBROUTINE mDGsweep(rhoq,u,uedge,dxel,nelem,N,wghts,DG_C,DG_LUC,DG_L,DG_DL,IPIV,
 	REAL(KIND=DOUBLE), DIMENSION(1:3,1:(nelem*(N+1))), INTENT(IN) :: u ! Velocities at quadrature locations within each element
 	REAL(KIND=DOUBLE), DIMENSION(1:3,1:nelem), INTENT(IN) :: uedge ! Edge velocities at RHS of each element
 	LOGICAL, INTENT(IN) :: doposlimit
-
 	! --- Outputs
 	REAL(KIND=DOUBLE), DIMENSION(1:(nelem*(N+1))), INTENT(INOUT) :: rhoq ! Soln as sub-cell averages within each element at FV cell centers
-
 	! --- Local Variables
 	INTEGER :: i,j,k,stage
 	REAL(KIND=DOUBLE), DIMENSION(0:N,1:nelem) :: rqBAR! Reshaped cell averages
@@ -57,12 +55,8 @@ SUBROUTINE mDGsweep(rhoq,u,uedge,dxel,nelem,N,wghts,DG_C,DG_LUC,DG_L,DG_DL,IPIV,
 	uedgetild(1:3,1:nelem) = uedge(1:3,1:nelem)
 	uedgetild(1:3,0) = uedge(1:3,nelem)
 
-CALL CPU_TIME(t0)
-
 	CALL projectAverages(A,DG_LUC,IPIV,rqBAR,N,nelem) ! Project incoming rhoq averages
 	A1 = A
-
-CALL CPU_TIME(t1)
 
 	DO stage = 1,3
 		uTmpQuad(:,:) = utild(stage,:,:)
@@ -73,7 +67,8 @@ CALL CPU_TIME(t1)
 
 		fcfrq = 1D0
 		IF(doposlimit) THEN
-			CALL FLUXCOR(A1,A,flxrq,DG_C,dxel,dt,nelem,N,stage,fcfrq)
+!			CALL FLUXCOR(A1,A,flxrq,DG_C,dxel,dt,nelem,N,stage,fcfrq)
+			CALL FLUXCOR(A1,A,flxrq,DG_C,dxel,dt,nelem,N,1,fcfrq)
 		ENDIF
 
 		! Forward step
@@ -96,25 +91,14 @@ CALL CPU_TIME(t1)
 		END SELECT
 	ENDDO ! stage
 
-CALL CPU_TIME(t2)
-    
     ! Average modal coefficients to get back to subcell averages
     DO j=1,nelem
     		rqBAR(:,j) = MATMUL(DG_C,A1(:,j))
     ENDDO
 
     IF(doposlimit) THEN
-!        tmpMass = SUM(qBAR)
 		CALL MFILL(rqBAR,N,nelem)
-!        IF( abs(tmpMass - SUM(qBAR)) .gt. 1D-13) THEN
-!            write(*,FMT='(A15,e12.4)') 'CHG After fill:',tmpMass - SUM(qBAR)
-!        ENDIF
     ENDIF
-
-CALL CPU_TIME(tf)
-!write(*,FMT='(A11,e12.5,f7.2,A11)') 'Proj time: ',t1-t0,((t1-t0)/(tf-t0))*100D0,' % of total'
-!write(*,FMT='(A11,e12.5,f7.2,A11)') 'Step time: ',t2-t1,((t2-t1)/(tf-t0))*100D0,' % of total'
-!write(*,*) ''
 
 	! Reform original shaped arrays
     DO j=1,nelem
@@ -146,7 +130,7 @@ REAL(KIND=KIND(1D0)) FUNCTION B(quadVals,flx,uQuad,wghts,k,j,nelem,N,fluxcf,dLeg
 	ELSE
 		B = B - flx(j) + ((-1D0)**k)*flx(j-1)
 	END IF
-
+!	B = B - fluxcf(j)*flx(j) + ((-1D0)**k)*fluxcf(j-1)*flx(j-1)
 	B = (2D0*k+1D0)*B
 
 END FUNCTION B
@@ -232,7 +216,6 @@ SUBROUTINE FLUXCOR(Acur,Apre,flx,DG_C,dxel,dt,nelem,N,substep,fluxcf)
 	R(nelem+1) = R(1)
 
 	! Compute flux corection factors
-!	fluxcf = R(0:nelem)
 	DO j=0,nelem
 		! If flux at right edge is negative, use limiting ratio in element to the right of current one
 		! (since that is where we are pulling mass from)
@@ -262,16 +245,7 @@ SUBROUTINE MFILL(rhoq,N,nelem)
 			rhoq(k,j) = MAX(0D0,rhoq(k,j)) ! Zero out negative masses
 			Mp = Mp + rhoq(k,j)
 		ENDDO
-
 		r = MAX(Mt,0D0)/MAX(Mp,TINY(1D0))
-
-!        IF(Mt .lt. 0D0) THEN
-!            write(*,*) 'WARNING: negative total mass when redistributing!',Mt
-!        END IF
-
-!		IF(r .gt. 1D0) THEN
-!			write(*,*) 'WARNING REDUCTION RATIO > 1.0!!'
-!		ENDIF
 		rhoq(:,j) = r*rhoq(:,j) ! Reduce remaining positive masses by reduction factor
 
 	ENDDO
