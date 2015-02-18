@@ -8,15 +8,16 @@ PROCESSOR := $(shell uname -m)
 
   .PHONY= 2d_test clean
 
-SOURCES= mDGmod.f90 mDGsweep.f90 tfcn.f90
-OBJECTS=$(SOURCES:.f90=.o)
+SOURCES = mDGmod.f90 mDGsweep.f90 tfcn.f90 nDGmod.f90
+INPUTS  = inputs.nl
+OBJECTS =$(SOURCES:.f90=.o)
 
-all: $(SOURCES)  test_modsplit_2d
+all: $(SOURCES) $(INPUTS) test_modsplit_2d
 
 2d_test: test_modsplit_2d
-	./test_modsplit_2d #> tmpOut.txt
+	./test_modsplit_2d
 
-test_modsplit_2d: $(OBJECTS) split_2d_modal.f90
+test_modsplit_2d: $(OBJECTS) $(SOURCES) $(INPUTS) split_2d_modal.f90
 	$(F90) $(FFLAGS) $(OBJECTS) split_2d_modal.f90 \
 	         -o $@ $(LDFLAGS) 
 

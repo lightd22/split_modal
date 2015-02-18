@@ -5,33 +5,30 @@
 ! Dependencies:
 ! 	netCDF
 !	LAPACK
-!	mDGmod.f90 ; mDGsweep.f90 ; tfcn.f90
+!	mDGmod.f90 ; mDGsweep.f90 ; tfcn.f90 ; inputs.nl
 ! By: Devin Light ; Sept. 2014
 ! =====================================
 
 PROGRAM EXECUTE
     USE mDGMOD
+    USE nDGMOD, ONLY: gllquad_nodes,gllquad_weights
     USE netCDF
 
     IMPLICIT NONE
-    INTEGER :: polyOrder,startRes,whichTest,testEnd,nTest,ierr
-    INTEGER, ALLOCATABLE, DIMENSION(:) :: testsVec
+    INTEGER :: polyDegree,startRes,whichTest,noutput,nRuns,nScale
     LOGICAL :: doposlimit,transient,debug,doTimeTest
-    REAL(KIND=8) :: muMAX
+    REAL(KIND=8) :: muMAX,cflCoeff
+    INTEGER, PARAMETER :: inUnit=20,outUnit=21
 
-    DEBUG = .FALSE.
+    NAMELIST /inputs/ startRes,nRuns,nScale,polyDegree,cflCoeff,noutput,whichTest,polyDegree,DEBUG,DOTIMETEST
+
+    OPEN(unit=inUnit,file="inputs.nl",action="read")
+    READ(inUnit,NML=inputs)
+
     transient = .FALSE.
     doposlimit = .FALSE.
-    doTimeTest = .FALSE.
 
-    polyOrder = 4
-    startRes = 12
-    testEnd = 2
-
-    ALLOCATE(testsVec(1:testEnd),STAT=ierr)
-    testsVec = (/ 6,7 /)
-
-    SELECT CASE(polyOrder)
+    SELECT CASE(polyDegree)
         CASE(2)
             muMAX = 0.209D0
         CASE(3)
@@ -51,42 +48,37 @@ PROGRAM EXECUTE
         CASE(9)
             muMAX = 0.026D0
     END SELECT
-    muMAX = muMAX*0.9
-!    muMAX = muMAX*(1D0+.3D0)
+    muMAX = muMAX*cflCoeff
 
     write(*,*) '======================================================'
     write(*,*) '             BEGINNING RUN OF MODAL TESTS             '
     write(*,'(A27,F7.4)') 'muMAX=',muMAX
     write(*,*) '======================================================'
 
-
-    DO nTest=1,testEnd
-        whichTest = testsVec(nTest)
-        write(*,*) '======'
-        SELECT CASE(whichTest)
-            CASE(0)
-                	write(*,*) 'TEST 0: Consistency test'
-                	transient = .TRUE.
-            CASE(1)
-                	write(*,*) 'TEST 1: Uniform advection (u=v=1)'                
-                	transient = .FALSE.
-            CASE(2)
-                	write(*,*) 'TEST 2: Solid body rotation of cylinder'
+    write(*,*) '======'
+    SELECT CASE(whichTest)
+        CASE(0)
+            	write(*,*) 'TEST 0: Consistency test'
+            	transient = .TRUE.
+        CASE(1)
+            	write(*,*) 'TEST 1: Uniform advection (u=v=1)'                
+            	transient = .FALSE.
+        CASE(2)
+            	write(*,*) 'TEST 2: Solid body rotation of cylinder'
                 transient = .FALSE.
-            CASE(5)
+        CASE(5)
                 write(*,*) 'TEST 5: LeVeque Cosbell Deformation Test'
                 transient = .TRUE.
-            CASE(6)
-                	write(*,*) 'TEST 6: LeVeque Smoother Cosbell Deformation Test'
-                	transient = .TRUE.
-            CASE(7)
-                	write(*,*) 'TEST 7: Slotted Cylinder Deformation Test'
-                	transient = .TRUE.
-        END SELECT
-        	write(*,*) '======'
-        	CALL test2d_modal(whichTest,startRes,startRes,2,3,2,muMAX) !1D0/(2D0*4D0-1D0) !0.3D0/sqrt(2d0)
-    ENDDO
-    DEALLOCATE(testsVec,STAT=ierr)
+        CASE(6)
+            	write(*,*) 'TEST 6: LeVeque Smoother Cosbell Deformation Test'
+            	transient = .TRUE.
+        CASE(7)
+            	write(*,*) 'TEST 7: Slotted Cylinder Deformation Test'
+            	transient = .TRUE.
+    END SELECT
+	write(*,*) '======'
+	CALL test2d_modal(whichTest,startRes,startRes,nScale,nRuns,noutput,muMAX) !1D0/(2D0*4D0-1D0) !0.3D0/sqrt(2d0)
+    CLOSE(inUnit)
 
 CONTAINS
     SUBROUTINE test2d_modal(ntest,nex0,ney0,nscale,nlevel,noutput,maxcfl)
@@ -100,18 +92,21 @@ CONTAINS
 	    REAL(KIND=8), DIMENSION(nlevel) :: e1, e2, ei
 		REAL(KIND=8) :: cnvg1, cnvg2, cnvgi, cons
 		INTEGER :: nmethod,nmethod_final,imethod,ierr,nmethodx,nmethody
-		INTEGER :: i,j,n,nOrder,p,nex,ney,nstep,nx,ny,nout
-        LOGICAL :: oddstep
+		INTEGER :: i,j,l,n,nOrder,p,nex,ney,nstep,nx,ny,nout
+        INTEGER, DIMENSION(1:2) :: horizBnd,vertBnd
+        LOGICAL :: oddstep,dogllGrid
 
 		CHARACTER(len=40) :: cdf_out
-        CHARACTER(len=8) :: outdir
+        CHARACTER(len=9) :: outdir
 
 		REAL(KIND=4) :: t0,tf,t1,t2,t3
+        REAL(KIND=8) :: maxTime, minTime,totTime
 
 		REAL(KIND=8) :: PI,dxel,dyel,tfinal,tmp_umax,tmp_vmax,tmp_qmax,tmp_qmin,dxm,dym,dt,time,calculatedMu,dxPlot,dyPlot
         REAL(KIND=8), DIMENSION(1:2) :: xEdge,yEdge,domainCenter
         REAL(KIND=8), ALLOCATABLE, DIMENSION(:,:) :: q,q0,u0,v0,uEdge0,vEdge0,avgXferOp,avgXferOpLU,legendreVal,legendreDeriv
-        REAL(KIND=8), ALLOCATABLE, DIMENSION(:) :: elemCenterX,elemCenterY,quadNodes,quadWeights,DGx,DGy,xPlot,yPlot,FOO
+        REAL(KIND=8), ALLOCATABLE, DIMENSION(:) :: elemCenterX,elemCenterY,quadNodes,quadWeights,DGx,DGy,xPlot,yPlot,FOO,&
+                                                   gllNodes,gllWeights,posWeight
 	    INTEGER, ALLOCATABLE, DIMENSION(:) :: IPIV
 
         if(nlevel.lt.1) STOP 'nlev should be at least 1 in calls to test2d_modal'
@@ -134,7 +129,9 @@ CONTAINS
         nmethod_final = 2
         tmp_method = 0
         tmp_method(1) = 1 ! Split modal DG, no limiting
-        tmp_method(2) = 2 ! Split modal DG, mass redistribution limiting for positivity
+        tmp_method(1) = 2 ! Split modal DG, mass redistribution limiting for positivity
+        tmp_method(3) = 3 ! Split modal DG, evaluate at GLL points for comparison
+        tmp_method(2) = 4 ! Split modal DG, evaluate at GLL points positivity redistribution
 
         DO nmethod = 1,nmethod_final
             imethod = tmp_method(nmethod)
@@ -142,32 +139,55 @@ CONTAINS
             SELECT CASE(imethod)
     		    CASE(1)
         		  write(*,*) 'DG, averages, no limiting'
-		      write(*,*) 'WARNING: Should only be used with periodic BCs'
+		          write(*,*) 'WARNING: Should only be used with periodic BCs'
         		  doposlimit = .false.
-		      outdir = 'dgnolim/'
-        		  nmethodx = 99
-		      nmethody = 99
-              nOrder = polyOrder
-		      write(*,FMT='(A5,i1)') ' N = ',nOrder
-		    CASE(2)
-		      write(*,*) 'DG, averages, element mass redist'
-		      write(*,*) 'WARNING: Should only be used with periodic BCs'
-		      doposlimit = .true.
-		      outdir = 'dgmfill/'
-		      nmethodx = 99
-		      nmethody = 99
-              nOrder = polyOrder
-		      write(*,FMT='(A5,i1)') ' N = ',nOrder
+                  dogllGrid = .false.
+		          outdir = '_dgnolim/'
+                  nmethodx = 99
+                  nmethody = 99
+                  nOrder = polyDegree
+                  write(*,FMT='(A5,i1)') ' N = ',nOrder
+                CASE(2)
+		          write(*,*) 'DG, averages, element mass redist'
+		          write(*,*) 'WARNING: Should only be used with periodic BCs'
+		          doposlimit = .true.
+                  dogllGrid = .false.
+		          outdir = '_dgmfill/'
+		          nmethodx = 99
+		          nmethody = 99
+                  nOrder = polyDegree
+		          write(*,FMT='(A5,i1)') ' N = ',nOrder
+                CASE(3)
+                  write(*,*) 'DG, solution at nodal values, no limiting'
+                  write(*,*) 'WARNING: Should only be used with periodic BCs'
+                  doposlimit = .false.
+                  dogllGrid = .true.
+                  outdir = '_dgnodes/'
+                  nmethodx = 99
+                  nmethody = 99
+                  nOrder = polyDegree
+                  write(*,FMT='(A5,i1)') ' N = ',nOrder
+                CASE(4)
+                  write(*,*) 'DG, solution at nodal values, positivity limiting'
+                  write(*,*) 'WARNING: Should only be used with periodic BCs'
+                  doposlimit = .true.
+                  dogllGrid = .true.
+                  outdir = '_posnods/'
+                  nmethodx = 99
+                  nmethody = 99
+                  nOrder = polyDegree
+                  write(*,FMT='(A5,i1)') ' N = ',nOrder
+
             END SELECT !imethod
 
             ! Fill in quadrature nodes and weights
             ALLOCATE(quadNodes(0:nOrder),quadWeights(0:nOrder),legendreVal(0:nOrder,0:nOrder),&
-                     legendreDeriv(0:nOrder,0:nOrder),STAT=ierr)
+                     legendreDeriv(0:nOrder,0:nOrder),posWeight(0:nOrder),STAT=ierr)
 
             CALL quad_nodes(nOrder+1,quadNodes)
             CALL quad_weights(nOrder+1,quadNodes,quadWeights)
 
-        		! Fill in array of Legendre polynomials evaluated at quad nodes + Leg. derivative at quad nodes
+        		! Fill array of Legendre polynomials evaluated at quad nodes + Leg. derivative at quad nodes
         		DO i=0,nOrder
         			DO j=0,nOrder
         				legendreVal(i,j) = legendre(quadNodes(j),i)
@@ -175,7 +195,7 @@ CONTAINS
         			ENDDO !j
         		ENDDO !i
 
-        
+            posWeight = 1D0
             DO p=1,nlevel
                 CALL cpu_time(t0)
 
@@ -200,17 +220,6 @@ CONTAINS
                 ! =====================================================================================================
                 ! Set up grids
                 ! =====================================================================================================
-                ! Set up plotting grids first
-                xPlot(1) = xEdge(1)+0.5D0*dxPlot
-                DO j=2,nx
-                    xPlot(j) = xPlot(j-1)+dxPlot
-                ENDDO!j
-
-                yPlot(1) = yEdge(1)+0.5D0*dyPlot
-                DO j=2,ny
-                    yPlot(j) = yPlot(j-1)+dyPlot
-                ENDDO!j
-
                 ! Set up DG grids for ICs
                 elemCenterX(1) = xEdge(1)+0.5D0*dxel
                 DO i=2,nex
@@ -230,14 +239,47 @@ CONTAINS
                     DGy(1+(i-1)*(nOrder+1):i*(nOrder+1)) = elemCenterY(i)+0.5D0*dyel*quadNodes(0:nOrder)
                 ENDDO !i
 
+                ! Set up plotting grids 
+                IF(dogllGrid) THEN
+                ! Output solution on tensor product of GLL nodes
+                    ALLOCATE(gllNodes(0:nOrder),gllWeights(0:nOrder),stat=ierr)
+                    CALL gllquad_nodes(nOrder,gllNodes)
+                    CALL gllquad_weights(nOrder,gllNodes,gllWeights)
+                    posWeight = gllWeights
+
+                    DO j=1,nex
+                        xPlot(1+(nOrder+1)*(j-1):(nOrder+1)*j) = 0.5D0*dxel*gllNodes(:)+elemCenterX(j)
+                    ENDDO !j
+                    DO j=1,nex
+                        yPlot(1+(nOrder+1)*(j-1):(nOrder+1)*j) = 0.5D0*dyel*gllNodes(:)+elemCenterY(j)
+                    ENDDO !j
+
+                ELSE
+                ! Use equally spaced subcells
+                    xPlot(1) = xEdge(1)+0.5D0*dxPlot
+                    DO j=2,nx
+                        xPlot(j) = xPlot(j-1)+dxPlot
+                    ENDDO!j
+                    yPlot(1) = yEdge(1)+0.5D0*dyPlot
+                    DO j=2,ny
+                        yPlot(j) = yPlot(j-1)+dyPlot
+                    ENDDO!j
+                ENDIF !dogllGrid
+
+
                 ! =====================================================================================================
                 ! Fill in operator used to transfer between subcell averages on plotting grid and DG modal coeffs
                 ! =====================================================================================================
-                CALL Cmat_FILL(nOrder,quadNodes,quadWeights,dxPlot,dxel,avgXferOp) ! Note that this assumes an evenly spaced sub-grid
-            		! Compute LU decomposition of avgXferOp, stored in avgXferOpLU
-            		avgXferOpLU = avgXferOp
-            		FOO = 0D0
-            		CALL DGESV(nOrder+1,1,avgXferOpLU,nOrder+1,IPIV,FOO,nOrder+1,ierr)
+                IF(dogllGrid) THEN
+                    CALL Cmat_FILL_GLLGrid(nOrder,gllNodes,avgXferOp)                  ! Assumes number of GLL points matches DOFs. Also has repeated points along bdry
+                ELSE
+                    CALL Cmat_FILL(nOrder,quadNodes,quadWeights,dxPlot,dxel,avgXferOp) ! Assumes an evenly spaced sub-grid
+                ENDIF
+                
+            	! Compute LU decomposition of avgXferOp, stored in avgXferOpLU
+            	avgXferOpLU = avgXferOp
+            	FOO = 0D0
+            	CALL DGESV(nOrder+1,1,avgXferOpLU,nOrder+1,IPIV,FOO,nOrder+1,ierr)
 
                 ! =====================================================================================================
                 ! Compute ICs for q,u, and v
@@ -246,8 +288,7 @@ CONTAINS
                             q0,u0,v0,uEdge0,vEdge0,tfinal,cdf_out,quadNodes,quadWeights,nOrder)     
 
                 q = q0
-                cdf_out = outdir//cdf_out
-
+        
                 ! =====================================================================================================
                 ! Set up time step
                 ! =====================================================================================================
@@ -278,6 +319,13 @@ CONTAINS
 
                 IF(p.eq.1) THEN ! Set up netCDF output file
                     write(*,*) 'Maximum velocity: |u| = ',maxval(sqrt(u0**2+v0**2))
+                    ! Make output file to capture intputs and screen output 
+                    cdf_out = outdir//TRIM(cdf_out)
+                    OPEN(unit=outUnit,file=TRIM(cdf_out)//'.out',status="REPLACE",action="WRITE")
+                    WRITE(outUnit,NML=inputs)
+                    WRITE(outUnit,FMT='(A)') '======================'
+
+                    cdf_out = TRIM(cdf_out)//'.nc'
                     CALL output2d(q,xPlot,yPlot,quadWeights,quadNodes,nex,ney,nOrder,nx,ny,tfinal,calculatedMu,&
                                   cdf_out,nout,-1)
                 ENDIF
@@ -291,14 +339,18 @@ CONTAINS
                 tmp_qmax = MAXVAL(q)
                 tmp_qmin = MINVAL(q)
             
+                maxTime = 0D0
+                minTime = 1D0
+                totTime = 0D0
+
                 oddstep = .TRUE.
                 DO n=1,nstep
-CALL CPU_TIME(t1)
+                    CALL CPU_TIME(t1)
                     CALL strangSplitUpdate(q,u0,v0,uEdge0,vEdge0,quadNodes,quadWeights,time,&
                                  legendreVal,legendreDeriv,avgXferOp,avgXferOpLU,IPIV,&
-                                 dt,dxel,dyel,nOrder,nx,ny,nex,ney,oddstep,doposlimit)
-CALL CPU_TIME(t2)
-!write(*,*) 'Post-step time:',t2-t1
+                                 dt,dxel,dyel,nOrder,nx,ny,nex,ney,oddstep,doposlimit,maxTime,minTime,totTime,posWeight)
+                    CALL CPU_TIME(t2)
+                    !write(*,*) 'Post-step time:',t2-t1
 
                     time = time + dt
 
@@ -324,6 +376,9 @@ CALL CPU_TIME(t2)
                 IF(p.eq.1) THEN
                     write(UNIT=6,FMT='(A119)') &
 ' nex  ney       E1          E2         Einf   convergence rate overshoot   undershoot    cons     cputime    step    tf '
+
+                    write(unit=outUnit,FMT='(A)') &
+' nex  ney       E1          E2         Einf   convergence rate overshoot   undershoot    cons     cputime    step    tf '
                     cnvg1 = 0.d0
                     cnvg2 = 0.d0
                     cnvgi = 0.d0
@@ -332,11 +387,35 @@ CALL CPU_TIME(t2)
                     cnvg2 = -log(e2(p)/e2(p-1))/log(dble(nscale))
                     cnvgi = -log(ei(p)/ei(p-1))/log(dble(nscale))
                 ENDIF
-                write(*,990) nex, ney, e1(p), e2(p), ei(p), &
+                IF(dogllGrid) THEN
+                    cons = 0D0 
+                    vertBnd(2) = -1
+                    DO i=1,nex
+                        horizBnd(1) = 1+(nOrder+1)*(i-1) 
+                        horizBnd(2) = (nOrder+1)*i
+                        DO j=1,ney
+                            DO l=0,nOrder
+                                vertBnd(1) = 1+(nOrder+1)*(j-1)+l
+                                cons = cons + 0.25D0*dxel*dyel*gllWeights(l)*&
+                                SUM( gllWeights(:)*(q(horizBnd(1):horizBnd(2),vertBnd(1))-q0(horizBnd(1):horizBnd(2),vertBnd(1))) )
+                            ENDDO
+                        ENDDO
+                    ENDDO
+                    cons = cons/DBLE(nx*ny)
+                ELSE
+                    cons = SUM(q(1:nx,1:ny)-q0)/DBLE(nx*ny)
+                ENDIF
+                write(*,FMT=990) nex, ney, e1(p), e2(p), ei(p), &
                              cnvg1, cnvg2, cnvgi, &
                              tmp_qmax-MAXVAL(q0), &
                              MINVAL(q0)-tmp_qmin, &
-                             SUM(q(1:nx,1:ny)-q0)/DBLE(nx*ny), tf, nstep,tfinal
+                             cons, tf, nstep,tfinal
+                write(unit=outUnit,FMT=990) nex, ney, e1(p), e2(p), ei(p), &
+                             cnvg1, cnvg2, cnvgi, &
+                             tmp_qmax-MAXVAL(q0), &
+                             MINVAL(q0)-tmp_qmin, &
+                             cons, tf, nstep,tfinal
+!write(*,'(3f8.2)') minTime, maxTime, totTime/tf
 
 				IF(p .eq. nlevel) THEN
                     CALL output2d(q,xPlot,yPlot,quadWeights,quadNodes,nex,ney,nOrder,nx,ny,tfinal,calculatedMu,&
@@ -347,7 +426,9 @@ CALL CPU_TIME(t2)
                            STAT=ierr)
 
             ENDDO !p
-            DEALLOCATE(quadNodes,quadWeights,legendreVal,legendreDeriv)
+            DEALLOCATE(quadNodes,quadWeights,legendreVal,legendreDeriv,posWeight)
+            IF(dogllGrid) DEALLOCATE(gllNodes,gllWeights,STAT=ierr)            
+            CLOSE(outUnit)
         ENDDO ! nmethod
 
 990    format(2i5,3e12.4,3f5.2,3e12.4,f8.2,i8,f8.2)
@@ -356,7 +437,8 @@ CALL CPU_TIME(t2)
 
     SUBROUTINE strangSplitUpdate(q,u0,v0,uEdge0,vEdge0,quadNodes,quadWeights,time,&
                                  legendreVal,legendreDeriv,avgXferOp,avgXferOpLU,IPIV,&
-                                 dt,dxel,dyel,nOrder,nx,ny,nex,ney,oddstep,doposlimit)
+                                 dt,dxel,dyel,nOrder,nx,ny,nex,ney,oddstep,doposlimit,&
+                                 maxTime,minTime,totTime,posWeight)
     ! =====================================================================================================
     ! strangSplitUpdate is responsible for selecting which slice of subcell volumes is sent to mDGsweep for update to time
     ! level tn+1 following a Strang splitting.
@@ -374,12 +456,13 @@ CALL CPU_TIME(t2)
         REAL(KIND=8), DIMENSION(1:nx,1:ny), INTENT(IN) :: u0,v0
         REAL(KIND=8), DIMENSION(1:nex,1:ny), INTENT(IN) :: uEdge0
         REAL(KIND=8), DIMENSION(1:nx,1:ney), INTENT(IN) :: vEdge0
-        REAL(KIND=8), DIMENSION(0:nOrder), INTENT(IN) :: quadNodes,quadWeights
+        REAL(KIND=8), DIMENSION(0:nOrder), INTENT(IN) :: quadNodes,quadWeights,posWeight
         REAL(KIND=8), DIMENSION(0:nOrder,0:nOrder), INTENT(IN) :: legendreVal,legendreDeriv,avgXferOp,avgXferOpLU
         INTEGER, DIMENSION(0:nOrder), INTENT(IN) :: IPIV
         LOGICAL, INTENT(IN) :: oddstep,doposlimit
         ! Outputs
         REAL(KIND=8), DIMENSION(1:nx,1:ny), INTENT(INOUT) :: q
+        REAL(KIND=8), INTENT(INOUT) :: maxTime, minTime, totTime
         ! Local variables
         INTEGER :: i,j,k
         REAL(KIND=8) :: t_temp,time_factor
@@ -427,7 +510,6 @@ CALL CPU_TIME(t2)
                 vEdge(i,:,:) = vEdge(i,:,:)*time_factor
             ENDDO !i
         ENDIF !transient
-
         IF(oddstep) THEN
             ! ===================================
             ! Perform sweeps in x-direction first
@@ -436,9 +518,9 @@ CALL CPU_TIME(t2)
                 q1dx = q(:,j)
                 u1dx(1:3,:) = u(1:3,:,j)
                 uEdge1dx(1:3,:) = uEdge(1:3,:,j)
-    
                 CALL mDGsweep(q1dx,u1dx,uEdge1dx,dxel,nex,nOrder,quadWeights,avgXferOp,avgXferOpLU, &
-                              legendreVal,legendreDeriv,IPIV,dt,doposlimit)
+                              legendreVal,legendreDeriv,IPIV,dt,doposlimit,posWeight,maxTime,minTime,&
+                              totTime)
                 ! Update solution
                 q(:,j) = q1dx
             ENDDO!j
@@ -449,7 +531,8 @@ CALL CPU_TIME(t2)
                 vEdge1dy(1:3,:) = vEdge(1:3,i,:)
 
                 CALL mDGsweep(q1dy,v1dy,vEdge1dy,dyel,ney,nOrder,quadWeights,avgXferOp,avgXferOPLU,&
-                              legendreVal,legendreDeriv,IPIV,dt,doposlimit)
+                              legendreVal,legendreDeriv,IPIV,dt,doposlimit,posWeight,maxTime,minTime,&
+                              totTime)
                 ! Update solution
                 q(i,:) = q1dy
             ENDDO !i
@@ -464,7 +547,8 @@ CALL CPU_TIME(t2)
                 vEdge1dy(1:3,:) = vEdge(1:3,i,:)
 
                 CALL mDGsweep(q1dy,v1dy,vEdge1dy,dyel,ney,nOrder,quadWeights,avgXferOp,avgXferOPLU,&
-                              legendreVal,legendreDeriv,IPIV,dt,doposlimit)
+                              legendreVal,legendreDeriv,IPIV,dt,doposlimit,posWeight,maxTime,minTime,&
+                              totTime)
                 ! Update solution
                 q(i,:) = q1dy
             ENDDO !i
@@ -475,7 +559,8 @@ CALL CPU_TIME(t2)
                 uEdge1dx(1:3,:) = uEdge(1:3,:,j)
     
                 CALL mDGsweep(q1dx,u1dx,uEdge1dx,dxel,nex,nOrder,quadWeights,avgXferOp,avgXferOpLU, &
-                              legendreVal,legendreDeriv,IPIV,dt,doposlimit)
+                              legendreVal,legendreDeriv,IPIV,dt,doposlimit,posWeight,maxTime,minTime,&
+                              totTime)
                 ! Update solution
                 q(:,j) = q1dx
             ENDDO!j
@@ -504,7 +589,7 @@ CALL CPU_TIME(t2)
         CHARACTER(LEN=40), INTENT(OUT) :: cdf_out
         ! Local Variables
         INTEGER :: i,j,l
-        REAL(KIND=8) :: PI,waveSpd,dxPlot,dyPlot
+        REAL(KIND=8) :: PI,waveSpd,dxPlot,dyPlot,x0,y0
         REAL(KIND=8), DIMENSION(0:nx) :: xPlotFace
         REAL(KIND=8), DIMENSION(0:ny) :: yPlotFace
         	REAL(KIND=8), DIMENSION(1:nx,0:ny) :: psi1
@@ -533,20 +618,20 @@ CALL CPU_TIME(t2)
 
         SELECT CASE(ntest)
             CASE(0) ! Consistency test: uniform field in deformation flow
-                cdf_out =  'spltMod2d_consistency.nc'
+                cdf_out =  'spltMod2d_consistency'
                 waveSpd = 1D0
                 tfinal = 5D0
                 q0 = 1D0
 
             CASE(1) ! Constant sine adv
-                cdf_out =  'spltMod2d_adv_sine.nc'
+                cdf_out =  'spltMod2d_adv_sine'
                 waveSpd = 1D0
                 tfinal = 1D0
                 DO j=1,ny
                     q0(:,j) = sin(2.d0*PI*xPlot(:))*sin(2.d0*PI*yPlot(j))
                 ENDDO !j
             CASE(2) ! Solid body rotation of cylinder
-                cdf_out = 'spltMod2d_rot_cylinder.nc'
+                cdf_out = 'spltMod2d_rot_cylinder'
                 waveSpd = 2D0*PI
                 tfinal = 1D0
                 DO j=1,ny
@@ -558,7 +643,7 @@ CALL CPU_TIME(t2)
                 END WHERE
 
             CASE(5) ! Cosbell deformation from LeVeque
-                cdf_out = 'spltMod2d_def_cosinebell.nc'
+                cdf_out = 'spltMod2d_def_cosinebell'
                 waveSpd = 1D0
                 tfinal = 5D0
 
@@ -572,7 +657,7 @@ CALL CPU_TIME(t2)
                 END WHERE
 
             CASE(6) ! Smoother cosbell deformation flow (LeVeque)
-                cdf_out = 'spltMod2d_def_smth_cosbell.nc'
+                cdf_out = 'spltMod2d_def_smth_cosbell'
                 waveSpd = 1D0
                 tfinal = 5D0
                 DO j=1,ny
@@ -584,11 +669,14 @@ CALL CPU_TIME(t2)
                 END WHERE
 
             CASE(7) ! Slotted cylinder in deformation flow
-                cdf_out = 'spltMod2d_def_cyl.nc'
+                cdf_out = 'spltMod2d_def_cyl'
                 waveSpd = 1D0
                 tfinal = 5D0
+
+                x0 = 0.25D0
+                y0 = 0.5D0
                 DO j=1,ny
-                    r(:,j) = SQRT((xPlot-0.3D0)**2 + (yPlot(j)-0.3D0)**2)
+                    r(:,j) = SQRT((xPlot-x0)**2 + (yPlot(j)-y0)**2)
                 ENDDO !j
                 q0 = 0D0
                 WHERE(r .lt. .15D0)
@@ -597,7 +685,7 @@ CALL CPU_TIME(t2)
 
                 DO j=1,ny
                     DO i=1,nx
-                        IF(xPlot(i) .gt.(0.3D0+0.1D0) .AND. ABS(yPlot(j)-0.3D0) .lt. 0.025D0) THEN
+                        IF(ABS(xPlot(i)-x0) .lt. 0.025D0 .AND. yPlot(j) .gt.(y0-0.0625D0)) THEN
                             q0(i,j) = 0D0
                         ENDIF
                     ENDDO !i

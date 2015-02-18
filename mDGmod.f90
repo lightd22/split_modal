@@ -142,6 +142,30 @@ MODULE mDGmod
 			ENDDO
 		END SUBROUTINE Cmat_FILL
 
+    ! #######################################################################
+    ! Subroutine for filling in the C-matrix. Used for interchanging solution 
+    ! between DG modes and GLL plotting grid and for splitting
+    ! #######################################################################
+    SUBROUTINE Cmat_FILL_GLLGrid(N,gllNodes,output)
+        IMPLICIT NONE
+        ! External functions
+        !REAL(KIND=DOUBLE), EXTERNAL :: legendre
+        ! Inputs
+        INTEGER, INTENT(IN) :: N
+        REAL(KIND=DOUBLE), DIMENSION(0:N), INTENT(IN) :: gllNodes
+        ! Outputs
+        REAL(KIND=DOUBLE), DIMENSION(0:N,0:N), INTENT(OUT) :: output
+        ! Local variables
+        INTEGER :: k,j
+
+        DO j=0,N
+            DO k=0,N
+            output(j,k) = legendre(gllNodes(j),k)
+            ENDDO !k
+        ENDDO !j
+    END SUBROUTINE Cmat_FILL_GLLGrid
+  
+
 	! ###############################################################################################################
 	! phitld(xi,j,A,N,nelem) computes the complete series expansion form of solution based on given coefficents and element
 	! ###############################################################################################################
